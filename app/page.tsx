@@ -23,6 +23,24 @@ const EXAMPLE = {
   needs: ["Soft / easy-to-chew food", "Low sodium", "Needs quiet, low-noise places"],
 };
 
+const SUGGESTIONS = ["Frank Sinatra", "The Beatles", "Patsy Cline", "Casablanca", "I Love Lucy", "The Andy Griffith Show", "Italian food", "Tex-Mex", "Jazz", "Gardening", "Elvis Presley", "Chinese food"];
+
+/** Turn raw tool-call traces into plain language. */
+function friendly(s: Step) {
+  const m = s.summary.match(/^“(.+?)” → (.+)$/);
+  if (s.tool === "Qloo search" && m) return m[2] === "no match" ? `Couldn't find “${m[1]}”, moving on` : `Found ${m[2]} in Qloo's taste graph`;
+  if (s.tool === "Qloo tags" && m) return `Checking what “${m[1]}” means for the plan`;
+  if (s.tool === "Qloo insights") {
+    const k = s.summary.match(/^(\w+): (\d+) taste-matched results(?: from (\d+) favourites)?/);
+    if (k) {
+      const noun: Record<string, string> = { place: "places", artist: "artists", movie: "films", tv_show: "TV shows", book: "books", podcast: "podcasts", brand: "brands", destination: "destinations" };
+      return `Found ${k[2]} ${noun[k[1]] ?? k[1]} that fit their taste${k[3] ? `, based on ${k[3]} of their favourites` : ""}`;
+    }
+  }
+  return s.summary;
+}
+const SECTION_LABEL: Record<string, string> = { dining: "Dining", music: "Music", screen: "Shows & films", outing: "Outings", reading: "Reading" };
+
 const BLANK = { name: "", birthYear: "", city: "", loves: "", notes: "", relationship: "myself", needs: [] as string[] };
 type Rejected = { id: string; name: string };
 const KIND_ICON: Record<string, string> = { dining: "🍽", music: "♪", screen: "▶", outing: "☀", reading: "📖" };
@@ -44,6 +62,7 @@ export default function Home() {
   const [big, setBig] = useState(false);
   const [copied, setCopied] = useState(false);
   const planRef = useRef<HTMLElement>(null);
+  const liveRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const saved = store.get("evergreen.profile");
@@ -55,11 +74,12 @@ export default function Home() {
   const toggle = (n: string) => setF((s) => ({ ...s, needs: s.needs.includes(n) ? s.needs.filter((x) => x !== n) : [...s.needs, n] }));
   const toggleBig = () => { setBig((b) => { store.set("evergreen.big", b ? "0" : "1"); return !b; }); };
 
-  async function run(rej: Rejected[]) {
+  async function run(rej: Rejected[], profile = f) {
     setBusy(true); setErr(""); setSteps([]); setPending([]);
-    store.set("evergreen.profile", JSON.stringify(f));
+    setTimeout(() => liveRef.current?.scrollIntoView({ behavior: "smooth", block: "center" }), 80);
+    store.set("evergreen.profile", JSON.stringify(profile));
     try {
-      const res = await fetch("/api/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...f, rejected: rej }) });
+      const res = await fetch("/api/plan", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...profile, rejected: rej }) });
       if (!res.ok || !res.body) throw new Error((await res.json().catch(() => ({}))).error ?? "Request failed");
       const reader = res.body.getReader();
       const dec = new TextDecoder();
@@ -86,6 +106,8 @@ export default function Home() {
   }
 
   const submit = (e: React.FormEvent) => { e.preventDefault(); setRejected([]); setPlan(null); run([]); };
+  const tryExample = () => { setF(EXAMPLE); setRejected([]); setPlan(null); run([], EXAMPLE); };
+  const addLove = (x: string) => set("loves", f.loves.trim() ? `${f.loves.trim().replace(/,$/, "")}, ${x}` : x);
   const reject = (id: string, name: string) => { const r = { id, name }; setRejected((x) => [...x, r]); setPending((x) => [...x, r]); };
   const undo = () => { setRejected((x) => x.filter((r) => !pending.some((p) => p.id === r.id))); setPending([]); };
   const hidden = new Set(rejected.map((r) => r.id));
@@ -115,9 +137,13 @@ export default function Home() {
       <header className="hero">
         <h1>Care that knows what they love.</h1>
         <p>Tell us a few favourites and Evergreen plans a gentle week of meals, music, shows and outings that feel like <em>them</em>, adapted to how they eat and move today. Powered by Qloo&rsquo;s taste graph.</p>
+        <div className="btns noprint">
+          <button type="button" className="primary" disabled={busy} onClick={tryExample}>See an example plan</button>
+          <a className="textlink" href="#form">or plan for someone you know</a>
+        </div>
       </header>
 
-      <form className="card noprint" onSubmit={submit}>
+      <form id="form" className="card noprint" onSubmit={submit}>
         <div className="row">
           <div><label htmlFor="n">Their first name</label><input id="n" value={f.name} onChange={(e) => set("name", e.target.value)} placeholder="Margaret" /></div>
           <div><label htmlFor="b">Year born</label><input id="b" inputMode="numeric" value={f.birthYear} onChange={(e) => set("birthYear", e.target.value)} placeholder="1948" required /></div>
@@ -125,6 +151,12 @@ export default function Home() {
         </div>
         <label htmlFor="l">Things they love <span className="hint">music, films, shows, foods, places. Names work best.</span></label>
         <textarea id="l" value={f.loves} onChange={(e) => set("loves", e.target.value)} placeholder="Patsy Cline, Casablanca, Italian food…" required />
+        <div className="chips sugs" aria-label="Quick add ideas">
+          <span className="sub">Not sure? Tap to add:</span>
+          {SUGGESTIONS.filter((x) => !f.loves.toLowerCase().includes(x.toLowerCase())).slice(0, 8).map((x) => (
+            <button type="button" key={x} className="chip sug" onClick={() => addLove(x)}>+ {x}</button>
+          ))}
+        </div>
         <label>Everyday needs</label>
         <div className="chips" role="group" aria-label="Everyday needs">
           {NEEDS.map((n) => (
@@ -142,14 +174,16 @@ export default function Home() {
           <button className="primary" disabled={busy}>{busy && <span className="spin" />}{busy ? "Planning…" : "Plan their week"}</button>
           <button type="button" className="ghost" disabled={busy} onClick={() => setF(EXAMPLE)}>Fill in an example</button>
         </div>
-        {err && <div className="err" role="alert">{err}</div>}
+        {err && <div className="err" role="alert">{err} <button type="button" className="link" onClick={() => run(rejected)}>Try again</button></div>}
       </form>
 
       {busy && (
-        <div className="card noprint live" aria-live="polite">
-          <h2>Evergreen is working</h2>
+        <div ref={liveRef} className="card noprint live" aria-live="polite">
+          <h2>Building {f.name ? `${f.name}’s` : "their"} week</h2>
+          <div className="bar" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.min(95, Math.round((steps.length / 15) * 100))}><i style={{ width: `${Math.min(95, (steps.length / 15) * 100)}%` }} /></div>
+          <p className="sub" style={{ margin: "6px 0 0" }}>This takes about a minute. We&rsquo;re asking Qloo, not guessing.</p>
           <ul className="steps">
-            {steps.map((s, i) => <li key={i}><span className="dot">✓</span><b>{s.tool}</b> {s.summary}</li>)}
+            {steps.slice(-6).map((s, i) => <li key={steps.length - Math.min(6, steps.length) + i}><span className="dot">✓</span>{friendly(s)}</li>)}
             <li className="now"><span className="spin dark" />Thinking about what fits…</li>
           </ul>
         </div>
@@ -157,6 +191,11 @@ export default function Home() {
 
       {plan && (
         <section ref={planRef} className="plan">
+          <nav className="jump noprint" aria-label="Jump to section">
+            {plan.week.length > 0 && <a href="#week">Week</a>}
+            {sections.map((s) => <a key={s.title} href={`#sec-${s.kind}-${s.title.length}`}>{SECTION_LABEL[s.kind] ?? s.title}</a>)}
+            <a href="#form">Edit details</a>
+          </nav>
           <div className="card"><p className="greet">{plan.greeting}</p>
             <div className="btns noprint" style={{ marginTop: 14 }}>
               <button type="button" className="ghost sm" onClick={() => window.print()}>Print this plan</button>
@@ -165,7 +204,7 @@ export default function Home() {
           </div>
 
           {plan.week.length > 0 && (
-            <div className="card">
+            <div className="card" id="week">
               <h2>Their week</h2>
               <div className="week">
                 {plan.week.map((d) => {
@@ -184,7 +223,7 @@ export default function Home() {
           )}
 
           {sections.map((s) => (
-            <div className="card" key={s.title}>
+            <div className="card" key={s.title} id={`sec-${s.kind}-${s.title.length}`}>
               <h2><span className="ico" aria-hidden>{KIND_ICON[s.kind] ?? "•"}</span>{s.title}</h2>
               <p className="sub">{s.intro}</p>
               <div className="grid">
@@ -193,7 +232,9 @@ export default function Home() {
                     {e.image ? <img src={e.image} alt="" loading="lazy" /> : <div className="ph" />}
                     <div className="body">
                       <h3>{e.name}</h3>
-                      {e.address && <div className="sub">{e.address}</div>}
+                      {e.address && (
+                        <div className="sub">{e.address} · <a className="textlink" target="_blank" rel="noopener noreferrer" href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(`${e.name} ${e.address}`)}`}>Directions ↗</a></div>
+                      )}
                       <p style={{ margin: "6px 0 0" }}>{note}</p>
                       {careNote && <div className="care">{careNote}</div>}
                       {e.because.length > 0 && <div className="why">Qloo matched this to: {e.because.map((b) => b.name).join(", ")}</div>}

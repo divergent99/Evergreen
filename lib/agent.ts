@@ -177,7 +177,26 @@ export async function runAgent(p: Profile, emit: (s: Step) => void = () => {}): 
     if (!calls.length) break;
 
     const submit = calls.find((c) => c.name === "submit_plan");
-    if (submit) return buildPlan(submit.input as any, pool, trace, new Set(rejectedIds));
+    if (submit) {
+      try {
+        return buildPlan(submit.input as any, pool, trace, new Set(rejectedIds));
+      } catch (e: any) {
+        // Self-heal: tell the model what was wrong and let it resubmit (bounded by the turn limit).
+        step("Evergreen", "Re-checking picks against Qloo results");
+        messages.push({
+          role: "user",
+          content: calls.map((c) => ({
+            type: "tool_result" as const,
+            tool_use_id: c.id,
+            is_error: true,
+            content: c.id === submit.id
+              ? `Rejected: ${e.message} Every entity_id must be copied exactly from a get_insights result's entity_id field. Call get_insights if you need more, then submit_plan again.`
+              : "Skipped; fix submit_plan first.",
+          })),
+        });
+        continue;
+      }
+    }
 
     const results: Anthropic.ToolResultBlockParam[] = await Promise.all(
       calls.map(async (c) => {
@@ -220,7 +239,13 @@ async function execTool(name: string, a: any, names: Map<string, string>, pool: 
   throw new Error(`Unknown tool ${name}`);
 }
 
-function buildPlan(input: any, pool: Map<string, QlooEntity>, trace: Step[], rejected: Set<string>): Plan {
+function buildPlan(input: any, rawPool: Map<string, QlooEntity>, trace: Step[], rawRejected: Set<string>): Plan {
+  // Models sometimes change the case or whitespace of UUIDs; match on a canonical form.
+  const canon = (id: unknown) => String(id ?? "").trim().toUpperCase();
+  const pool = new Map([...rawPool].map(([k, v]) => [canon(k), v] as const));
+  const rejected = new Set([...rawRejected].map(canon));
+  const lookup = (id: unknown) => pool.get(canon(id));
+  const unknown = new Set<string>();
   const sections = (input.sections ?? [])
     .map((s: any) => ({
       title: String(s.title),
@@ -228,25 +253,52 @@ function buildPlan(input: any, pool: Map<string, QlooEntity>, trace: Step[], rej
       intro: String(s.intro),
       // Grounding guard: drop anything Qloo never returned.
       items: (s.items ?? [])
-        .filter((i: any) => pool.has(i.entity_id) && !rejected.has(i.entity_id))
-        .map((i: any) => ({ entity: pool.get(i.entity_id)!, note: String(i.note), careNote: i.care_note ? String(i.care_note) : undefined })),
+        .filter((i: any) => (lookup(i.entity_id) ? !rejected.has(canon(i.entity_id)) : (unknown.add(String(i.entity_id)), false)))
+        .map((i: any) => ({ entity: lookup(i.entity_id)!, note: String(i.note), careNote: i.care_note ? String(i.care_note) : undefined })),
     }))
     .filter((s: any) => s.items.length);
+  if (unknown.size) console.warn(`[grounding] dropped ${unknown.size} ids not returned by Qloo: ${[...unknown].slice(0, 4).join(", ")} (pool ${pool.size})`);
   if (!sections.length) throw new Error("No Qloo-grounded recommendations were produced. Try adding more favourites.");
   const week = (input.week ?? [])
     .map((d: any) => ({
       day: String(d.day),
       slots: (d.slots ?? [])
-        .filter((x: any) => pool.has(x.entity_id) && !rejected.has(x.entity_id))
-        .map((x: any) => ({ when: String(x.when), activity: String(x.activity), entity: pool.get(x.entity_id)! })),
+        .filter((x: any) => (lookup(x.entity_id) ? !rejected.has(canon(x.entity_id)) : (unknown.add(String(x.entity_id)), false)))
+        .map((x: any) => ({ when: String(x.when), activity: String(x.activity), entity: lookup(x.entity_id)! })),
     }))
     .filter((d: any) => d.slots.length);
   return {
     greeting: String(input.greeting ?? ""),
-    week,
+    week: week.length >= 3 ? week : fallbackWeek(sections),
     sections,
     conversationStarters: input.conversation_starters ?? [],
     caregiverTips: input.caregiver_tips ?? [],
     trace,
   };
+}
+
+/** If the model skipped the week or its IDs were rejected, spread the already-grounded picks over a gentle week. */
+function fallbackWeek(sections: Plan["sections"]): WeekDay[] {
+  const pick = (kind: string) => sections.filter((s) => s.kind === kind).flatMap((s) => s.items.map((i) => i.entity));
+  const dining = pick("dining"), music = pick("music"), screen = pick("screen"), outing = [...pick("outing"), ...pick("reading")];
+  const at = <T,>(xs: T[], i: number) => (xs.length ? xs[i % xs.length] : undefined);
+  // [day, slots...] where each slot is [when, verb, source list, index]
+  const plan: [string, [string, string, QlooEntity[], number][]][] = [
+    ["Monday", [["Lunch", "Lunch at", dining, 0], ["Evening", "Watch", screen, 0]]],
+    ["Tuesday", [["Morning", "Gentle outing:", outing, 0], ["Afternoon", "Put on", music, 0]]],
+    ["Wednesday", [["Lunch", "Lunch at", dining, 1], ["Evening", "Watch", screen, 1]]],
+    ["Thursday", [["Afternoon", "Put on", music, 1]]],
+    ["Friday", [["Lunch", "Lunch at", dining, 2], ["Evening", "Watch", screen, 2]]],
+    ["Saturday", [["Morning", "Gentle outing:", outing, 1], ["Afternoon", "Put on", music, 2]]],
+    ["Sunday", [["Lunch", "Relaxed lunch at", dining, 3], ["Evening", "Watch", screen, 3]]],
+  ];
+  return plan
+    .map(([day, slots]) => ({
+      day,
+      slots: slots.flatMap(([when, verb, list, i]) => {
+        const entity = at(list, i);
+        return entity ? [{ when, activity: `${verb} ${entity.name}`, entity }] : [];
+      }),
+    }))
+    .filter((d) => d.slots.length);
 }

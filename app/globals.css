@@ -82,3 +82,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-
 }
 .tag.acc { background: #e3eefb; color: #1f4a7a; }
 .access { margin-top: 6px; }
+
+/* v3 */
+html { scroll-behavior: smooth; scroll-padding-top: 64px; }
+.textlink { color: var(--green); font-weight: 600; }
+.hero .btns { align-items: center; margin-top: 18px; }
+.sugs { align-items: center; margin-top: 8px; }
+.chip.sug { background: transparent; border-style: dashed; color: var(--green-d); }
+.chip.sug:hover { background: var(--soft); }
+.bar { height: 10px; background: #e3ebe3; border-radius: 99px; overflow: hidden; margin-top: 10px; }
+.bar i { display: block; height: 100%; background: var(--green); border-radius: 99px; transition: width .6s ease; }
+.jump { position: sticky; top: 0; z-index: 5; display: flex; gap: 8px; overflow-x: auto; padding: 10px 0; margin: 12px 0 0; background: var(--bg); }
+.jump a { white-space: nowrap; text-decoration: none; color: var(--green-d); border: 1px solid var(--line); background: #fff; padding: 8px 16px; border-radius: 999px; font-size: .85rem; font-weight: 600; }
+.jump a:hover { background: var(--soft); }
+.err .link { color: #8a2a1f; font-weight: 700; padding: 0 0 0 8px; }
+@media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; } }
