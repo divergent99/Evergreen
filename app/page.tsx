@@ -348,10 +348,12 @@ export default function Home() {
                 </div>
               ))}
 
-              <div className="block two">
-                <div className="soft-card"><h3>Conversation starters</h3><ul>{plan.conversationStarters.map((c) => <li key={c}>{c}</li>)}</ul></div>
-                <div className="soft-card warm"><h3>Tips for the day</h3><ul>{plan.caregiverTips.map((c) => <li key={c}>{c}</li>)}</ul></div>
-              </div>
+              {(plan.conversationStarters.length > 0 || plan.caregiverTips.length > 0) && (
+                <div className="block two">
+                  {plan.conversationStarters.length > 0 && <div className="soft-card"><h3>Conversation starters</h3><ul>{plan.conversationStarters.map((c) => <li key={c}>{c}</li>)}</ul></div>}
+                  {plan.caregiverTips.length > 0 && <div className="soft-card warm"><h3>Tips for the day</h3><ul>{plan.caregiverTips.map((c) => <li key={c}>{c}</li>)}</ul></div>}
+                </div>
+              )}
 
               <details className="trace-box noprint">
                 <summary>How the agent got here ({plan.trace.length} Qloo calls)</summary>

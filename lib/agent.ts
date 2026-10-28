@@ -136,7 +136,8 @@ Method:
 Each get_insights result carries a "facts" list of real Qloo attributes. Accessibility and atmosphere claims (wheelchair access, quiet, relaxing, scenic...) must come from an entity's facts; if Qloo does not list it, say it is worth calling ahead to confirm rather than asserting it.
 5. Produce 3-4 sections (dining near ${p.city || "them"} is required if a city was given, plus music, screen, and an outing or reading), 3-4 items each, then build a 5-7 day "week" that spreads those same picks into a realistic, gentle rhythm (rest days are fine; never schedule two outings in a day), then call submit_plan. Notes must be specific to this person, 1-2 sentences, warm and plain-spoken.
 ${p.rejected.length ? `The person rejected these earlier picks, so do not suggest them or very close alternatives: ${p.rejected.map((r) => r.name).join(", ")}.
-` : ""}Speak to ${p.relationship === "caregiver" ? "the caregiver about their loved one" : "the person directly"}.`;
+` : ""}conversation_starters must hold 4-5 warm, specific questions about their favourites, and caregiver_tips 3-5 practical tips; neither may be empty. Write only to the reader: never describe your own search process, results you skipped, or what "came up".
+Speak to ${p.relationship === "caregiver" ? "the caregiver about their loved one" : "the person directly"}.`;
 }
 
 export async function runAgent(p: Profile, emit: (s: Step) => void = () => {}): Promise<Plan> {
@@ -179,7 +180,7 @@ export async function runAgent(p: Profile, emit: (s: Step) => void = () => {}): 
     const submit = calls.find((c) => c.name === "submit_plan");
     if (submit) {
       try {
-        return buildPlan(submit.input as any, pool, trace, new Set(rejectedIds));
+        return buildPlan(submit.input as any, pool, trace, new Set(rejectedIds), p);
       } catch (e: any) {
         // Self-heal: tell the model what was wrong and let it resubmit (bounded by the turn limit).
         step("Evergreen", "Re-checking picks against Qloo results");
@@ -239,7 +240,7 @@ async function execTool(name: string, a: any, names: Map<string, string>, pool: 
   throw new Error(`Unknown tool ${name}`);
 }
 
-function buildPlan(input: any, rawPool: Map<string, QlooEntity>, trace: Step[], rawRejected: Set<string>): Plan {
+function buildPlan(input: any, rawPool: Map<string, QlooEntity>, trace: Step[], rawRejected: Set<string>, profile: Profile): Plan {
   // Models sometimes change the case or whitespace of UUIDs; match on a canonical form.
   const canon = (id: unknown) => String(id ?? "").trim().toUpperCase();
   const pool = new Map([...rawPool].map(([k, v]) => [canon(k), v] as const));
@@ -271,8 +272,8 @@ function buildPlan(input: any, rawPool: Map<string, QlooEntity>, trace: Step[], 
     greeting: String(input.greeting ?? ""),
     week: week.length >= 3 ? week : fallbackWeek(sections),
     sections,
-    conversationStarters: input.conversation_starters ?? [],
-    caregiverTips: input.caregiver_tips ?? [],
+    conversationStarters: nonEmpty(input.conversation_starters) ?? fallbackStarters(profile),
+    caregiverTips: nonEmpty(input.caregiver_tips) ?? fallbackTips(profile),
     trace,
   };
 }
@@ -301,4 +302,31 @@ function fallbackWeek(sections: Plan["sections"]): WeekDay[] {
       }),
     }))
     .filter((d) => d.slots.length);
+}
+
+const nonEmpty = (xs: unknown): string[] | undefined => {
+  const list = Array.isArray(xs) ? xs.map((x) => String(x).trim()).filter(Boolean) : [];
+  return list.length ? list : undefined;
+};
+
+/** The model sometimes returns these lists empty; build sensible ones from the profile instead. */
+function fallbackStarters(p: Profile): string[] {
+  const favs = p.loves.split(/[,;]/).map((x) => x.trim()).filter(Boolean).slice(0, 3);
+  return [
+    ...favs.map((f) => `What does ${f} bring back for you?`),
+    "What was the best meal you ever shared with someone you loved?",
+    "Which song can you never hear without smiling?",
+  ];
+}
+
+const NEED_TIPS: [RegExp, string][] = [
+  [/soft|chew/i, "Ask the kitchen for soft, tender dishes; pasta, stews and braises are usually easy to chew."],
+  [/sodium|salt/i, "Ask for little or no added salt, and watch sauces, soups and chips. Check sodium limits with their doctor or dietitian."],
+  [/quiet|noise/i, "Go at off-peak times, such as a weekday late morning, and ask for a table away from the bar or speakers."],
+  [/mobility|step/i, "Call ahead to confirm step-free entrances, seating and restrooms before you go."],
+  [/hearing/i, "Pick calm rooms, sit face to face, and turn subtitles on for shows."],
+];
+function fallbackTips(p: Profile): string[] {
+  const tips = NEED_TIPS.filter(([re]) => p.needs.some((n) => re.test(n))).map(([, t]) => t);
+  return [...tips, "Keep the pace easy: one outing a day at most, with plenty of rest and music at home."];
 }
